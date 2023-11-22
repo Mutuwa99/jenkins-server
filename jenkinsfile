@@ -1,0 +1,59 @@
+pipeline {
+    agent any
+
+    environment {
+        SSH_CREDENTIALS_ID = 'mysite'
+        SERVER_IP = 'ec2-35-174-18-61.compute-1.amazonaws.com'
+        REMOTE_USER = 'ubuntu' // Change this to the appropriate non-root user
+        GITHUB_REPO_URL = 'https://github.com/Mutuwa99/mywebsite.git'
+    }
+
+    stages {
+        stage('Test SSH Connection') {
+            steps {
+                script {
+                    // Use SSH credentials to test the connection
+                    withCredentials([file(credentialsId: SSH_CREDENTIALS_ID, variable: 'SSH_KEY')]) {
+                        // Add the server's host key to known_hosts
+                        sh "ssh-keyscan -H ${SERVER_IP} >> ~/.ssh/known_hosts"
+
+                        // Test the connection
+                        sh "ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} 'echo Connection successful'"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy Code') {
+            steps {
+                script {
+                    // Checkout the code from the GitHub repository
+                    checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[url: GITHUB_REPO_URL]]])
+
+                    // Add the server's host key to known_hosts
+                    sh "ssh-keyscan -H ${SERVER_IP} >> ~/.ssh/known_hosts"
+
+                    // Deploy the code to the server
+                    withCredentials([file(credentialsId: SSH_CREDENTIALS_ID, variable: 'SSH_KEY')]) {
+                        try {
+                             sh "scp -i \$SSH_KEY -r . ${REMOTE_USER}@${SERVER_IP}:/var/www/html/"
+                            echo 'Deployment successful!'
+                        } catch (Exception e) {
+                            echo "Deployment failed: ${e.message}"
+                            error 'Deployment failed!'
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Pipeline successful!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
