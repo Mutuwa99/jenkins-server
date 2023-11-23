@@ -1,5 +1,10 @@
 pipeline {
-    agent any
+    agent {
+        docker {
+            image 'your-jenkins-docker-image'
+            args '-u root' // Run as root to allow modifications to /var/jenkins_home/.ssh
+        }
+    }
 
     environment {
         SSH_CREDENTIALS_ID = 'mysite'
@@ -9,16 +14,28 @@ pipeline {
     }
 
     stages {
+        stage('Prepare') {
+            steps {
+                script {
+                    // Clean workspace
+                    deleteDir()
+
+                    // Checkout the code from the GitHub repository
+                    checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[url: GITHUB_REPO_URL]]])
+                }
+            }
+        }
+
         stage('Test SSH Connection') {
             steps {
                 script {
                     // Use SSH credentials to test the connection
                     withCredentials([file(credentialsId: SSH_CREDENTIALS_ID, variable: 'SSH_KEY')]) {
                         // Add the server's host key to known_hosts
-                        sh "ssh-keyscan -H ${SERVER_IP} >> ~/.ssh/known_hosts"
+                        sh "ssh-keyscan -H ${SERVER_IP} >> /root/.ssh/known_hosts"
 
                         // Test the connection
-                        sh "ssh -i \$SSH_KEY -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} 'echo Connection successful'"
+                        sh "ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no ${REMOTE_USER}@${SERVER_IP} 'echo Connection successful'"
                     }
                 }
             }
@@ -27,16 +44,13 @@ pipeline {
         stage('Deploy Code') {
             steps {
                 script {
-                    // Checkout the code from the GitHub repository
-                    checkout([$class: 'GitSCM', branches: [[name: '*/master']], doGenerateSubmoduleConfigurations: false, extensions: [], submoduleCfg: [], userRemoteConfigs: [[url: GITHUB_REPO_URL]]])
+                    // Ensure remote directory exists
+                    sh "ssh -i /root/.ssh/id_rsa ${REMOTE_USER}@${SERVER_IP} 'mkdir -p /var/www/html/'"
 
-                    // Add the server's host key to known_hosts
-                    sh "ssh-keyscan -H ${SERVER_IP} >> ~/.ssh/known_hosts"
-
-                    // Deploy the code to the server
+                    // Deploy the code to the server using rsync
                     withCredentials([file(credentialsId: SSH_CREDENTIALS_ID, variable: 'SSH_KEY')]) {
                         try {
-                             sh "scp -i \$SSH_KEY -r . ${REMOTE_USER}@${SERVER_IP}:/var/www/html/"
+                            sh "rsync -avz -e 'ssh -i /root/.ssh/id_rsa' --exclude='.git' ./ ${REMOTE_USER}@${SERVER_IP}:/var/www/html/"
                             echo 'Deployment successful!'
                         } catch (Exception e) {
                             echo "Deployment failed: ${e.message}"
